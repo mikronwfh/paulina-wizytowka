@@ -3,62 +3,83 @@ import shutil
 import subprocess
 import re
 
-def run(cmd):
-    print(f"-> Wykonuję: {cmd}")
+def run_cmd(cmd):
     result = subprocess.run(cmd, shell=True, text=True, capture_output=True)
-    if result.returncode != 0:
-        print(f"   Informacja: {result.stderr.strip()}")
-    return result.returncode == 0
+    return result
 
-def clean_and_prepare():
-    print("🧹 Porządkuję pliki...")
-    
-    # Tworzymy folder src, jeśli nie istnieje
-    if not os.path.exists("src"):
-        os.makedirs("src")
+def clean_and_fix_files():
+    print("\n🛠️  Naprawiam strukturę plików dla Vercel...")
+    os.makedirs("src", exist_ok=True)
 
-    # Pliki do przeniesienia do src (standard Vite)
-    files_to_move = ["App.tsx", "index.tsx", "types.ts"]
-    for f in files_to_move:
+    # 1. Naprawa App.tsx - usuwanie nieistniejących importów
+    if os.path.exists("App.tsx"):
+        with open("App.tsx", "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        # Usuwamy linie z importami z folderu components, jeśli go nie ma
+        if not os.path.exists("components"):
+            lines = [line for line in lines if './components/' not in line]
+        
+        with open("src/App.tsx", "w", encoding="utf-8") as f:
+            f.writelines(lines)
+
+    # 2. Przenoszenie kluczowych plików
+    for f in ["index.tsx", "types.ts"]:
         if os.path.exists(f):
-            # Jeśli plik już jest w src, nadpisujemy go najnowszą wersją
-            shutil.move(f, os.path.join("src", f))
+            shutil.copy2(f, os.path.join("src", f))
 
-    # Naprawa index.html
+    # 3. Naprawa index.html
     if os.path.exists("index.html"):
         with open("index.html", "r", encoding="utf-8") as f:
-            content = f.read()
-
-        # 1. Usuwamy blok <script type="importmap">...</script>
-        content = re.sub(r'<script type="importmap">.*?</script>', '', content, flags=re.DOTALL)
-        
-        # 2. Naprawiamy ścieżkę do skryptu (Vercel musi widzieć /src/index.tsx)
-        content = content.replace('src="/index.tsx"', 'src="/src/index.tsx"')
-        
+            html = f.read()
+        html = re.sub(r'<script type="importmap">.*?</script>', '', html, flags=re.DOTALL)
+        html = html.replace('src="/index.tsx"', 'src="/src/index.tsx"')
         with open("index.html", "w", encoding="utf-8") as f:
-            f.write(content)
-        print("✅ index.html naprawiony.")
+            f.write(html)
 
-def push_to_git(repo_name):
-    print(f"🚀 Wysyłam projekt do repozytorium: {repo_name}")
+    # 4. Pusty CSS, żeby Vercel nie zgłaszał błędu
+    if not os.path.exists("index.css"):
+        with open("index.css", "w") as f: f.write("/* build fix */")
+
+def handle_git_logic():
+    # Pobieramy nazwę aktualnego folderu jako domyślną nazwę repo
+    default_name = os.path.basename(os.getcwd())
     
+    print(f"\n--- KONFIGURACJA GITHUB ---")
+    repo_name = input(f"Podaj nazwę repozytorium (domyślnie: {default_name}): ").strip() or default_name
+    
+    # Sprawdzamy czy repo już istnieje na Twoim GitHubie
+    check_repo = run_cmd(f"gh repo view {repo_name}")
+    
+    if check_repo.returncode == 0:
+        print(f"⚠️  Repozytorium '{repo_name}' już istnieje na GitHub.")
+        choice = input("Co chcesz zrobić? [1] Nadpisać (Force Push) | [2] Podać nową nazwę: ")
+        
+        if choice == "2":
+            repo_name = input("Podaj NOWĄ nazwę repozytorium: ").strip()
+            return handle_git_logic() # Rekurencja, żeby sprawdzić nową nazwę
+    else:
+        print(f"✨ Tworzę nowe repozytorium: {repo_name}")
+
+    # Logika Gita
     if not os.path.exists(".git"):
-        run("git init")
-        run("git branch -M main")
+        run_cmd("git init")
+        run_cmd("git branch -M main")
 
-    # Sprawdzamy czy repo na GH istnieje, jeśli nie - tworzymy
-    run(f"gh repo create {repo_name} --public --source=. --remote=origin")
+    # Próba stworzenia repo (jeśli nie istnieje)
+    run_cmd(f"gh repo create {repo_name} --public --source=. --remote=origin")
     
-    run("git add .")
-    run('git commit -m "Automatyczna aktualizacja z AI Studio"')
-    run("git push -u origin main --force")
+    run_cmd("git add .")
+    run_cmd('git commit -m "Automatyczna aktualizacja struktury i kodu"')
+    
+    print(f"📤 Wysyłam kod do https://github.com/twoj-login/{repo_name}...")
+    push_result = run_cmd("git push -u origin main --force")
+    
+    if push_result.returncode == 0:
+        print(f"✅ SUKCES! Kod jest na GitHubie.")
+    else:
+        print(f"❌ Błąd wysyłki: {push_result.stderr}")
 
 if __name__ == "__main__":
-    # Możesz tu wpisać na sztywno nazwę swojego repo, żeby nie pytał co chwilę
-    repo = "paulina-wizytowka" 
-    
-    clean_and_prepare()
-    push_to_git(repo)
-    
-    print("\n✨ WSZYSTKO GOTOWE!")
-    print(f"Twoja strona na Vercel powinna się teraz sama przebudować.")
+    clean_and_fix_files()
+    handle_git_logic()
+    print("\n🚀 Proces zakończony. Sprawdź swój panel Vercel!")
